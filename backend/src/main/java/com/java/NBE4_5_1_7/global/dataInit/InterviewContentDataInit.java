@@ -40,7 +40,7 @@ public class InterviewContentDataInit {
 
         try {
             // resources 폴더에 위치한 CSV 파일을 불러옴
-            File csvFile = new File("data/기술면접컨텐츠데이터-종합.csv");
+            File csvFile = new File("backend/data/기술면접컨텐츠데이터-종합.csv");
             InputStreamReader streamReader = new InputStreamReader(new FileInputStream(csvFile), StandardCharsets.UTF_8);
             CSVReader csvReader = new CSVReader(streamReader);
 

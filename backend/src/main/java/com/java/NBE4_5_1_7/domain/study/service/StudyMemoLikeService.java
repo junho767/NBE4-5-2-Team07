@@ -39,7 +39,9 @@ public class StudyMemoLikeService {
             if (!isLocked) {
                 throw new RuntimeException("시스템이 바빠 요청을 처리할 수 없습니다. 잠시 후 다시 시도해주세요.");
             }
-            Optional<StudyMemoLike> existingLike = studyMemoLikeRepository.findByStudyMemo(studyMemo);
+            
+            // 현재 로그인한 멤버의 좋아요만 조회 (멤버별로 독립적으로 처리)
+            Optional<StudyMemoLike> existingLike = studyMemoLikeRepository.findByMemberAndStudyMemo(member, studyMemo);
             if (existingLike.isPresent()) {
                 studyMemoLikeRepository.delete(existingLike.get());
                 return "좋아요 취소";

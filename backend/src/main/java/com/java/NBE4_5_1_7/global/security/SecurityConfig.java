@@ -49,7 +49,7 @@ public class SecurityConfig {
                                         "/api/v1/admin/**",
                                         "/app/chat/admin/**",
                                         "/chat/admin/**").hasRole("ADMIN")
-                                .anyRequest().authenticated()
+                                .anyRequest().permitAll()
                 )
                 .cors(Customizer.withDefaults())
                 .csrf(csrf -> csrf.disable())
