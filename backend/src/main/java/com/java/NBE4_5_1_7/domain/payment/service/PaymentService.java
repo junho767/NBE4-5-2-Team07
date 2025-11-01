@@ -15,6 +15,8 @@ import jakarta.annotation.PostConstruct;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -22,6 +24,7 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
@@ -29,6 +32,7 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class PaymentService {
     private final OrderRepository orderRepository;
+    private final RedissonClient redissonClient;
     private final MemberService memberService;
     private IamportClient iamportClient;
 
@@ -46,22 +50,40 @@ public class PaymentService {
     // 결제 검증 (DB 저장은 하지 않음)
     @Transactional
     public PaymentResponseDto verifyPayment(PaymentRequestDto requestDto) {
-        Member member = memberService.getMemberFromRq();
-        try {
-            String impUid = requestDto.getImp_uid();
-            IamportResponse<Payment> paymentResponse = iamportClient.paymentByImpUid(impUid);
+        String lockKey = "payment:lock:" + requestDto.getImp_uid();
+        RLock lock = redissonClient.getLock(lockKey);
 
-            if (paymentResponse == null || paymentResponse.getResponse() == null) {
-                throw new RuntimeException("결제 정보를 가져올 수 없습니다.");
+        try {
+            boolean isLocked = lock.tryLock(3, 5, TimeUnit.SECONDS);
+
+            if (!isLocked) {
+                throw new RuntimeException("결제 락 획득 실패 - 다른 요청 처리 중");
             }
 
-            Payment payment = paymentResponse.getResponse();
-            PaymentResponseDto responseDto = new PaymentResponseDto(payment, member);
-            saveOrder(responseDto, member);
+            try {
+                log.info("결제 락 획득 성공");
 
-            return responseDto;
-        } catch (Exception e) {
-            throw new RuntimeException("결제 검증 중 오류 발생: " + e.getMessage());
+                // 실제 결제 검증 로직
+                Member member = memberService.getMemberFromRq();
+                IamportResponse<Payment> paymentResponse = iamportClient.paymentByImpUid(requestDto.getImp_uid());
+
+                if (paymentResponse == null || paymentResponse.getResponse() == null) {
+                    throw new RuntimeException("결제 정보를 가져올 수 없습니다.");
+                }
+
+                Payment payment = paymentResponse.getResponse();
+                PaymentResponseDto responseDto = new PaymentResponseDto(payment, member);
+                saveOrder(responseDto, member);
+
+                return responseDto;
+
+            } finally {
+                lock.unlock();
+                log.info("결제 락 해제");
+            }
+
+        } catch (InterruptedException | IamportResponseException | IOException e) {
+            throw new RuntimeException("결제 락 대기 중 인터럽트");
         }
     }
 
@@ -79,20 +101,33 @@ public class PaymentService {
     }
 
     // 웹훅에서 결제 상태 처리
-    public void handleWebhook(Map<String, Object> payload) throws InterruptedException {
-        Thread.sleep(3000);
-        String impUid = (String) payload.get("imp_uid");  // 웹훅에서 imp_uid 가져오기
-        if (impUid == null) {
-            throw new IllegalArgumentException("존재하지 않는 imp 번호 입니다.");
-        }
+    public void handleWebhook(Map<String, Object> payload) {
+        String impUid = (String) payload.get("imp_uid");
+        String lockKey = "payment:lock:" + impUid;
+        RLock lock = redissonClient.getLock(lockKey);
 
-        // 포트원 API를 호출해 결제 정보 조회
-        IamportResponse<Payment> paymentResponse = getPaymentData(impUid);
+        try {
+            boolean isLocked = lock.tryLock(3, 5, TimeUnit.SECONDS);
 
-        if (paymentResponse == null || paymentResponse.getResponse() == null) {
-            throw new RuntimeException("결제 정보 조회 실패");
+            if (!isLocked) {
+                throw new RuntimeException("웹훅 락 획득 실패");
+            }
+
+            try {
+                log.info("웹훅 락 획득 ");
+
+                // 웹훅 처리 로직
+                IamportResponse<Payment> paymentResponse = getPaymentData(impUid);
+                updatePaymentStatus(paymentResponse.getResponse());
+
+            } finally {
+                lock.unlock();
+                log.info("웹훅 락 해제");
+            }
+
+        } catch (InterruptedException e) {
+            throw new RuntimeException("락 대기 중 인터럽트");
         }
-        updatePaymentStatus(paymentResponse.getResponse());
     }
 
     // 결제 상태 업데이트
